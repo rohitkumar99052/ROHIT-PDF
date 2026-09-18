@@ -39,7 +39,7 @@ export const DBMS_ASSIGNMENT_5_6: DbmsQuestion[] = [
     explanation: '• REST (Representational State Transfer) is a prominent architectural style for Web Services (statement a is true).\n• REST and JSON work together ubiquitously (statement b is false).\n• XML data format (SOAP/WSDL) is traditionally associated with Big Web Services (statement c is true).\n• Data can be accessed via RPC mechanisms (gRPC, XML-RPC) on the Web (statement d is false).\nHence, options (a) and (c) are correct.'
   },
   {
-    id: 53, // Q43 in flow
+    id: 43,
     assignment: 5,
     assignmentTitle: 'Assignment 5',
     topic: 'Disk Controller & Storage Concepts',
