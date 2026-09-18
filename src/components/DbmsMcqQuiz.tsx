@@ -16,11 +16,13 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { DBMS_QUESTIONS, DBMS_ASSIGNMENTS, DbmsQuestion } from '../data/dbmsQuestions';
+import { DBMS_QUESTIONS, DBMS_ASSIGNMENTS, DbmsQuestion, DbmsTable, DbmsOption } from '../data/dbmsQuestions';
+import { DbmsDiagramRenderer } from './DbmsDiagramRenderer';
 
 interface ShuffledOption {
   originalId: string;
   text: string;
+  table?: DbmsTable;
 }
 
 interface ProcessedQuestion {
@@ -28,13 +30,46 @@ interface ProcessedQuestion {
   shuffledOptions: ShuffledOption[];
 }
 
+export const DbmsTableView: React.FC<{ table: DbmsTable }> = ({ table }) => (
+  <div className="overflow-x-auto my-3 rounded-xl border border-slate-200 shadow-2xs bg-white">
+    {table.title && (
+      <div className="px-3.5 py-1.5 bg-slate-100 border-b border-slate-200 text-[11px] sm:text-xs font-bold text-slate-800 tracking-wide flex items-center gap-1.5">
+        <span className="w-2 h-2 rounded-full bg-cyan-600 inline-block"></span>
+        <span>{table.title}</span>
+      </div>
+    )}
+    <table className="w-full text-left text-xs sm:text-sm divide-y divide-slate-200">
+      <thead className="bg-slate-50 text-slate-700 font-semibold text-[11px] sm:text-xs uppercase tracking-wider">
+        <tr>
+          {table.headers.map((h, i) => (
+            <th key={i} className="px-3 py-2 border-r border-slate-200 last:border-r-0 whitespace-nowrap">
+              {h}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-slate-100 text-slate-700 font-mono text-[11px] sm:text-xs">
+        {table.rows.map((row, rIdx) => (
+          <tr key={rIdx} className={rIdx % 2 === 0 ? 'bg-white' : 'bg-slate-50/60 hover:bg-cyan-50/30'}>
+            {row.map((cell, cIdx) => (
+              <td key={cIdx} className="px-3 py-1.5 border-r border-slate-100 last:border-r-0 whitespace-nowrap">
+                {String(cell)}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+);
+
 export const DbmsMcqQuiz: React.FC = () => {
   const [selectedAssignment, setSelectedAssignment] = useState<number>(0); // 0 = All 80, 1-8 = Assignments
   const [activeQuestionIndex, setActiveQuestionIndex] = useState<number>(0);
   const [selectedAnswers, setSelectedAnswers] = useState<Record<number, string>>({}); // { questionId: optionId }
   const [isSubmitted, setIsSubmitted] = useState<boolean>(false);
-  const [shuffleQuestions, setShuffleQuestions] = useState<boolean>(false);
-  const [shuffleOptions, setShuffleOptions] = useState<boolean>(false);
+  const [shuffleQuestions, setShuffleQuestions] = useState<boolean>(true);
+  const [shuffleOptions, setShuffleOptions] = useState<boolean>(true);
   const [reviewFilter, setReviewFilter] = useState<'all' | 'correct' | 'incorrect' | 'unanswered'>('all');
   const [quizKey, setQuizKey] = useState<number>(0);
   const [showConfirmModal, setShowConfirmModal] = useState<boolean>(false);
@@ -61,7 +96,7 @@ export const DbmsMcqQuiz: React.FC = () => {
     }
 
     return list.map(q => {
-      let opts = q.options.map(o => ({ originalId: o.id, text: o.text }));
+      let opts = q.options.map(o => ({ originalId: o.id, text: o.text, table: o.table }));
       if (shuffleOptions) {
         for (let i = opts.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
@@ -78,12 +113,38 @@ export const DbmsMcqQuiz: React.FC = () => {
 
   const currentItem = processedQuestions[activeQuestionIndex] || processedQuestions[0];
 
-  const handleSelectOption = (questionId: number, optionId: string) => {
+  const isOptionSelected = (questionId: number, optionId: string, qType?: 'MCQ' | 'MSQ') => {
+    const ans = selectedAnswers[questionId];
+    if (!ans) return false;
+    if (qType === 'MSQ') {
+      const parts = ans.split(',').map(s => s.trim().toLowerCase());
+      return parts.includes(optionId.toLowerCase());
+    }
+    return ans.toLowerCase() === optionId.toLowerCase();
+  };
+
+  const handleSelectOption = (questionId: number, optionId: string, qType?: 'MCQ' | 'MSQ') => {
     if (isSubmitted) return;
-    setSelectedAnswers(prev => ({
-      ...prev,
-      [questionId]: optionId
-    }));
+    setSelectedAnswers(prev => {
+      if (qType === 'MSQ') {
+        const current = prev[questionId] ? prev[questionId].split(',').map(s => s.trim()).filter(Boolean) : [];
+        let updated: string[];
+        if (current.includes(optionId)) {
+          updated = current.filter(id => id !== optionId);
+        } else {
+          updated = [...current, optionId].sort();
+        }
+        return {
+          ...prev,
+          [questionId]: updated.join(', ')
+        };
+      } else {
+        return {
+          ...prev,
+          [questionId]: optionId
+        };
+      }
+    });
   };
 
   const handleSelectAssignment = (assignmentId: number) => {
@@ -101,10 +162,21 @@ export const DbmsMcqQuiz: React.FC = () => {
     setQuizKey(k => k + 1);
   };
 
+  const isAnswerCorrect = (userAns: string | undefined, q: DbmsQuestion) => {
+    if (!userAns) return false;
+    if (q.questionType === 'MSQ') {
+      const userSelected = userAns.split(',').map(s => s.trim().toLowerCase()).filter(Boolean).sort();
+      const correctAnswers = (q.correctOptionIds || q.correctOptionId.split(',')).map(s => s.trim().toLowerCase()).filter(Boolean).sort();
+      if (userSelected.length !== correctAnswers.length) return false;
+      return userSelected.every((val, index) => val === correctAnswers[index]);
+    }
+    return userAns.trim().toLowerCase() === q.correctOptionId.trim().toLowerCase();
+  };
+
   const calculateScore = () => {
     let score = 0;
     processedQuestions.forEach(item => {
-      if (selectedAnswers[item.question.id] === item.question.correctOptionId) {
+      if (isAnswerCorrect(selectedAnswers[item.question.id], item.question)) {
         score += 1;
       }
     });
@@ -128,8 +200,9 @@ export const DbmsMcqQuiz: React.FC = () => {
     if (!isSubmitted) return [];
     return processedQuestions.filter(item => {
       const chosen = selectedAnswers[item.question.id];
-      if (reviewFilter === 'correct') return chosen === item.question.correctOptionId;
-      if (reviewFilter === 'incorrect') return !!chosen && chosen !== item.question.correctOptionId;
+      const correct = isAnswerCorrect(chosen, item.question);
+      if (reviewFilter === 'correct') return correct;
+      if (reviewFilter === 'incorrect') return !!chosen && !correct;
       if (reviewFilter === 'unanswered') return !chosen;
       return true;
     });
@@ -147,14 +220,14 @@ export const DbmsMcqQuiz: React.FC = () => {
                 <Database className="w-3.5 h-3.5 text-cyan-400" /> DBMS Master Quiz
               </span>
               <span className="px-2.5 py-0.5 sm:px-3 sm:py-1 bg-emerald-500/20 border border-emerald-400/30 rounded-full text-[11px] sm:text-xs font-bold text-emerald-300 flex items-center gap-1">
-                <Sparkles className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> 80 Real Exam MCQs (Assignments 1–8)
+                <Sparkles className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> 80 Real Exam MCQs with Figures & Tables
               </span>
             </div>
             <h2 className="text-lg sm:text-2xl md:text-3xl font-extrabold tracking-tight">
               Database Management System Assessment
             </h2>
             <p className="text-cyan-200/90 text-xs sm:text-sm max-w-2xl leading-relaxed hidden sm:block">
-              Covering Abstraction, Relational Algebra, SQL, Normalization, RAID, B+ Trees, 2PL, Recovery & Optimization. Shuffled for realistic exam practice!
+              Exact questions with original diagrams, relational instances, ER models, 2-3-4 trees, schedules & solutions from all 8 assignments.
             </p>
           </div>
 
@@ -218,129 +291,164 @@ export const DbmsMcqQuiz: React.FC = () => {
                   key={asgn.id}
                   id={`dbms-tab-asgn-${asgn.id}`}
                   onClick={() => handleSelectAssignment(asgn.id)}
-                  className={`p-1.5 sm:p-2.5 rounded-xl text-center transition-all border relative ${
+                  className={`py-1.5 sm:py-2.5 px-2 rounded-lg sm:rounded-xl text-center transition-all ${
                     isCurrent
-                      ? 'bg-cyan-400 text-slate-950 border-cyan-300 shadow-md font-bold'
-                      : 'bg-slate-900/60 border-cyan-900/40 text-cyan-100 hover:bg-cyan-950/60'
+                      ? 'bg-cyan-500 text-slate-950 font-extrabold shadow-lg shadow-cyan-500/30 scale-102 ring-2 ring-white/50'
+                      : 'bg-slate-800/70 hover:bg-slate-800 text-slate-300 hover:text-white border border-cyan-900/30'
                   }`}
                 >
-                  <div className="text-[11px] sm:text-xs font-bold uppercase whitespace-nowrap">Asgn {asgn.id}</div>
-                  <div className="text-[9px] opacity-80">10 Qs</div>
+                  <div className="text-[11px] sm:text-xs font-bold leading-tight">Week {asgn.id}</div>
+                  <div className="text-[9px] sm:text-[10px] opacity-75">10 Qs</div>
                 </button>
               );
             })}
 
-            {/* Option to practice All 80 Questions */}
             <button
-              id="dbms-tab-all"
+              id="dbms-tab-asgn-all"
               onClick={() => handleSelectAssignment(0)}
-              className={`p-1.5 sm:p-2.5 rounded-xl text-center transition-all border relative col-span-3 sm:col-span-1 ${
+              className={`py-1.5 sm:py-2.5 px-2 rounded-lg sm:rounded-xl text-center transition-all col-span-3 sm:col-span-1 md:col-span-1 ${
                 selectedAssignment === 0
-                  ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-md font-bold'
-                  : 'bg-slate-900/60 border-cyan-900/40 text-cyan-100 hover:bg-cyan-950/60'
+                  ? 'bg-cyan-500 text-slate-950 font-extrabold shadow-lg shadow-cyan-500/30 scale-102 ring-2 ring-white/50'
+                  : 'bg-slate-800/70 hover:bg-slate-800 text-slate-300 hover:text-white border border-cyan-900/30'
               }`}
             >
-              <div className="text-[11px] sm:text-xs font-bold uppercase whitespace-nowrap">All 80 Qs</div>
-              <div className="text-[9px] opacity-80">Full Mock</div>
+              <div className="text-[11px] sm:text-xs font-bold leading-tight">All 80</div>
+              <div className="text-[9px] sm:text-[10px] opacity-75">Mock Exam</div>
             </button>
           </div>
         </div>
       </div>
 
-      {/* Main Content Area: Quiz Taking Mode vs Result Mode */}
+      {/* Main Content Area */}
       {!isSubmitted ? (
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 sm:gap-6">
-          {/* Main Question Panel (3 Columns) */}
-          <div className="lg:col-span-3 space-y-2 sm:space-y-6">
-            {/* Progress Tracker */}
-            <div className="bg-white rounded-xl sm:rounded-2xl p-2.5 sm:p-4 border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-3">
-              <div className="flex items-center justify-between sm:justify-start gap-2 sm:gap-3 flex-wrap">
-                <span className="text-xs sm:text-sm font-bold text-slate-800">
+          {/* Question View (3 Columns on Large Screen) */}
+          <div className="lg:col-span-3 space-y-4">
+            {/* Progress Bar & Status */}
+            <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <span className="text-xs sm:text-sm font-bold text-slate-700">
                   Question {activeQuestionIndex + 1} of {processedQuestions.length}
                 </span>
-                <span className="text-[10px] sm:text-[11px] px-2 py-0.5 sm:py-1 bg-slate-100 text-slate-600 rounded-md font-medium">
-                  {currentItem?.question.assignmentTitle}
+                <span className="text-[11px] sm:text-xs px-2.5 py-0.5 rounded-full bg-cyan-50 text-cyan-700 font-semibold border border-cyan-100">
+                  Assignment {currentItem.question.assignment}
                 </span>
-                <button
-                  id="dbms-mobile-palette-toggle-btn"
-                  onClick={() => setShowMobilePalette(true)}
-                  className="lg:hidden ml-auto px-2 py-0.5 bg-cyan-50 hover:bg-cyan-100 border border-cyan-200 text-cyan-800 text-[11px] font-bold rounded-lg flex items-center gap-1 active:scale-95 transition-all"
-                >
-                  <ListChecks className="w-3 h-3 text-cyan-600" />
-                  <span>Palette ({answeredCount}/{processedQuestions.length})</span>
-                </button>
+                {currentItem.question.questionType === 'MSQ' && (
+                  <span className="text-[11px] sm:text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 font-bold border border-amber-200">
+                    MSQ (Multiple Answers)
+                  </span>
+                )}
               </div>
 
-              <div className="flex items-center justify-between sm:justify-end gap-2.5">
-                <span className="text-[11px] sm:text-xs text-slate-500 font-medium whitespace-nowrap">
-                  {answeredCount} of {processedQuestions.length} Answered
-                </span>
-                <div className="w-20 sm:w-28 h-2 bg-slate-100 rounded-full overflow-hidden">
+              {/* Mobile Palette Toggle Button */}
+              <button
+                onClick={() => setShowMobilePalette(true)}
+                className="lg:hidden flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-all"
+              >
+                <ListChecks className="w-4 h-4 text-cyan-600" /> Question Palette ({answeredCount}/{processedQuestions.length})
+              </button>
+
+              <div className="flex items-center gap-3 w-full sm:w-auto">
+                <div className="w-full sm:w-36 bg-slate-100 h-2.5 rounded-full overflow-hidden">
                   <div 
-                    className="h-full bg-cyan-600 transition-all duration-300 rounded-full"
+                    className="bg-cyan-600 h-full transition-all duration-300 rounded-full"
                     style={{ width: `${progressPercent}%` }}
                   />
                 </div>
+                <span className="text-xs font-bold text-slate-600 shrink-0">
+                  {progressPercent}%
+                </span>
               </div>
             </div>
 
-            {/* Active Question Box */}
+            {/* Current Question Card */}
             {currentItem && (
-              <motion.div 
+              <motion.div
                 key={currentItem.question.id}
-                initial={{ opacity: 0, y: 10 }}
+                initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="bg-white rounded-xl sm:rounded-3xl p-3 sm:p-6 md:p-8 border border-slate-200 shadow-xs sm:shadow-sm space-y-3 sm:space-y-6"
+                transition={{ duration: 0.2 }}
+                className="bg-white rounded-2xl sm:rounded-3xl p-3 sm:p-6 md:p-8 border border-slate-200 shadow-sm space-y-4 sm:space-y-6"
               >
-                {/* Question Statement */}
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] sm:text-xs font-bold text-cyan-700 uppercase tracking-wider">
-                      Question {activeQuestionIndex + 1}
+                {/* Question Topic & Text */}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[10px] sm:text-[11px] font-bold tracking-wider uppercase text-cyan-700 bg-cyan-50 px-2 py-0.5 rounded border border-cyan-100">
+                      {currentItem.question.assignmentTitle}
                     </span>
                     <span className="text-[10px] sm:text-[11px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
                       {currentItem.question.topic}
                     </span>
+                    <span className="text-[10px] sm:text-[11px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
+                      Marks: {currentItem.question.marks}
+                    </span>
                   </div>
-                  <h3 className="text-sm sm:text-lg md:text-xl font-bold text-slate-900 leading-snug break-words">
+                  <h3 className="text-sm sm:text-lg md:text-xl font-bold text-slate-900 leading-snug whitespace-pre-line">
                     {currentItem.question.question}
                   </h3>
                 </div>
+
+                {/* Primary Table (if any) */}
+                {currentItem.question.table && (
+                  <DbmsTableView table={currentItem.question.table} />
+                )}
+
+                {/* Additional Tables (if any) */}
+                {currentItem.question.additionalTables && currentItem.question.additionalTables.map((t, idx) => (
+                  <DbmsTableView key={idx} table={t} />
+                ))}
+
+                {/* Diagram (if any) */}
+                {currentItem.question.diagram && (
+                  <DbmsDiagramRenderer 
+                    type={currentItem.question.diagram.type} 
+                    caption={currentItem.question.diagram.caption} 
+                  />
+                )}
 
                 {/* Shuffled Options */}
                 <div className="space-y-2 sm:space-y-3 pt-1">
                   {currentItem.shuffledOptions.map((opt, optIndex) => {
                     const optionLetter = String.fromCharCode(65 + optIndex); // A, B, C, D
-                    const isSelected = selectedAnswers[currentItem.question.id] === opt.originalId;
+                    const isSelected = isOptionSelected(currentItem.question.id, opt.originalId, currentItem.question.questionType);
 
                     return (
                       <button
                         key={opt.originalId}
                         id={`dbms-option-${currentItem.question.id}-${opt.originalId}`}
-                        onClick={() => handleSelectOption(currentItem.question.id, opt.originalId)}
-                        className={`w-full px-2.5 py-2 sm:p-4 rounded-xl sm:rounded-2xl border text-left flex items-center gap-2.5 sm:gap-3.5 transition-all ${
+                        onClick={() => handleSelectOption(currentItem.question.id, opt.originalId, currentItem.question.questionType)}
+                        className={`w-full px-2.5 py-2 sm:p-4 rounded-xl sm:rounded-2xl border text-left flex flex-col gap-2 transition-all ${
                           isSelected
                             ? 'border-cyan-600 bg-cyan-50/90 shadow-xs ring-1 ring-cyan-500/30'
                             : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50/80 bg-white'
                         }`}
                       >
-                        <div className={`w-6 h-6 sm:w-8 sm:h-8 rounded-lg sm:rounded-xl flex items-center justify-center font-bold text-xs sm:text-sm shrink-0 transition-colors ${
-                          isSelected
-                            ? 'bg-cyan-600 text-white shadow-xs'
-                            : 'bg-slate-100 text-slate-700'
-                        }`}>
-                          {optionLetter}
+                        <div className="flex items-center gap-2.5 sm:gap-3.5 w-full">
+                          <div className={`w-6 h-6 sm:w-8 sm:h-8 rounded-lg sm:rounded-xl flex items-center justify-center font-bold text-xs sm:text-sm shrink-0 transition-colors ${
+                            isSelected
+                              ? 'bg-cyan-600 text-white shadow-xs'
+                              : 'bg-slate-100 text-slate-700'
+                          }`}>
+                            {optionLetter}
+                          </div>
+                          <div className="flex-1 text-xs sm:text-sm md:text-base text-slate-800 font-medium leading-snug break-words whitespace-pre-line">
+                            {opt.text}
+                          </div>
+                          <div className={`w-4 h-4 sm:w-5 sm:h-5 ${currentItem.question.questionType === 'MSQ' ? 'rounded-md' : 'rounded-full'} border sm:border-2 flex items-center justify-center shrink-0 transition-all ${
+                            isSelected
+                              ? 'border-cyan-600 bg-cyan-600 text-white'
+                              : 'border-slate-300'
+                          }`}>
+                            {isSelected && <Check className="w-2.5 h-2.5 sm:w-3 sm:h-3 stroke-[3]" />}
+                          </div>
                         </div>
-                        <div className="flex-1 text-xs sm:text-sm md:text-base text-slate-800 font-medium leading-snug break-words">
-                          {opt.text}
-                        </div>
-                        <div className={`w-4 h-4 sm:w-5 sm:h-5 rounded-full border sm:border-2 flex items-center justify-center shrink-0 transition-all ${
-                          isSelected
-                            ? 'border-cyan-600 bg-cyan-600 text-white'
-                            : 'border-slate-300'
-                        }`}>
-                          {isSelected && <Check className="w-2.5 h-2.5 sm:w-3 sm:h-3 stroke-[3]" />}
-                        </div>
+
+                        {/* Optional Option-embedded Table (e.g. Q7 instances) */}
+                        {opt.table && (
+                          <div className="pl-8 sm:pl-11 w-full">
+                            <DbmsTableView table={opt.table} />
+                          </div>
+                        )}
                       </button>
                     );
                   })}
@@ -451,7 +559,7 @@ export const DbmsMcqQuiz: React.FC = () => {
             </div>
             <h3 className="text-2xl font-bold text-slate-900">Quiz Completed!</h3>
             <p className="text-slate-500 text-sm max-w-md mx-auto">
-              Review your DBMS performance below. Explanations are provided for every question.
+              Review your DBMS performance below. Explanations and diagrams are provided for every question.
             </p>
 
             <div className="flex items-center justify-center gap-8 py-4">
@@ -459,38 +567,38 @@ export const DbmsMcqQuiz: React.FC = () => {
                 <div className="text-3xl sm:text-4xl font-extrabold text-cyan-700">{score} / {processedQuestions.length}</div>
                 <div className="text-xs text-slate-500 font-medium uppercase tracking-wider mt-1">Score</div>
               </div>
-              <div className="h-10 w-px bg-slate-200" />
+              <div className="h-12 w-px bg-slate-200" />
               <div className="text-center">
-                <div className={`text-3xl sm:text-4xl font-extrabold ${percentage >= 70 ? 'text-emerald-600' : percentage >= 40 ? 'text-amber-600' : 'text-red-600'}`}>
+                <div className={`text-3xl sm:text-4xl font-extrabold ${percentage >= 70 ? 'text-emerald-600' : percentage >= 40 ? 'text-amber-600' : 'text-rose-600'}`}>
                   {percentage}%
                 </div>
-                <div className="text-xs text-slate-500 font-medium uppercase tracking-wider mt-1">Percentage</div>
+                <div className="text-xs text-slate-500 font-medium uppercase tracking-wider mt-1">Accuracy</div>
               </div>
             </div>
 
-            <div className="flex items-center justify-center gap-3 pt-2">
+            <div className="pt-2 flex flex-wrap items-center justify-center gap-3">
               <button
                 onClick={resetQuiz}
-                className="px-6 py-2.5 bg-cyan-700 hover:bg-cyan-800 text-white font-bold rounded-xl text-sm transition-all shadow-md flex items-center gap-2 active:scale-95"
+                className="px-6 py-2.5 bg-cyan-700 hover:bg-cyan-800 text-white font-bold rounded-xl text-sm shadow-md transition-all flex items-center gap-2"
               >
-                <RotateCcw className="w-4 h-4" /> Practice Again
+                <RotateCcw className="w-4 h-4" /> Retake Quiz
               </button>
             </div>
           </div>
 
           {/* Review Filter Bar */}
-          <div className="flex items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-xs flex-wrap">
+          <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs flex flex-col sm:flex-row items-center justify-between gap-3">
             <div className="flex items-center gap-2 text-sm font-bold text-slate-700">
-              <Filter className="w-4 h-4 text-slate-500" /> Filter Review:
+              <Filter className="w-4 h-4 text-cyan-600" /> Filter Review:
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex flex-wrap items-center gap-1.5">
               {(['all', 'correct', 'incorrect', 'unanswered'] as const).map(f => (
                 <button
                   key={f}
                   onClick={() => setReviewFilter(f)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-bold capitalize transition-all ${
                     reviewFilter === f
-                      ? 'bg-slate-900 text-white shadow-xs'
+                      ? 'bg-cyan-700 text-white shadow-xs'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
                 >
@@ -500,64 +608,117 @@ export const DbmsMcqQuiz: React.FC = () => {
             </div>
           </div>
 
-          {/* Detailed Question Review List */}
+          {/* Review Questions List */}
           <div className="space-y-4">
-            {reviewQuestions.map((item, index) => {
-              const userAnswerId = selectedAnswers[item.question.id];
-              const isCorrect = userAnswerId === item.question.correctOptionId;
-              const isUnanswered = !userAnswerId;
+            {reviewQuestions.map((item, idx) => {
+              const chosen = selectedAnswers[item.question.id];
+              const isCorrect = isAnswerCorrect(chosen, item.question);
 
               return (
-                <div 
+                <div
                   key={item.question.id}
-                  className="bg-white rounded-2xl p-4 sm:p-6 border border-slate-200 shadow-xs space-y-4"
+                  className={`bg-white rounded-2xl p-5 md:p-6 border space-y-4 transition-all shadow-2xs ${
+                    isCorrect
+                      ? 'border-emerald-200 bg-emerald-50/10'
+                      : chosen
+                      ? 'border-rose-200 bg-rose-50/10'
+                      : 'border-slate-200 bg-slate-50/20'
+                  }`}
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-slate-500 uppercase">
-                      Question {index + 1} ({item.question.assignmentTitle} • {item.question.topic})
-                    </span>
-                    <span className={`text-xs px-2.5 py-0.5 rounded-full font-bold ${
-                      isCorrect ? 'bg-emerald-100 text-emerald-800' :
-                      isUnanswered ? 'bg-amber-100 text-amber-800' :
-                      'bg-red-100 text-red-800'
-                    }`}>
-                      {isCorrect ? 'Correct' : isUnanswered ? 'Unanswered' : 'Incorrect'}
-                    </span>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[11px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
+                          Q{idx + 1} (Asgn {item.question.assignment})
+                        </span>
+                        <span className="text-[11px] font-medium text-slate-500">
+                          {item.question.topic}
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
+                          {item.question.questionType} • Marks: {item.question.marks}
+                        </span>
+                      </div>
+                      <h4 className="font-bold text-slate-900 text-sm sm:text-base leading-snug whitespace-pre-line pt-1">
+                        {item.question.question}
+                      </h4>
+                    </div>
+
+                    <div className="shrink-0">
+                      {isCorrect ? (
+                        <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-full text-xs font-bold flex items-center gap-1">
+                          <Check className="w-3.5 h-3.5" /> Correct
+                        </span>
+                      ) : chosen ? (
+                        <span className="px-2.5 py-1 bg-rose-100 text-rose-800 rounded-full text-xs font-bold flex items-center gap-1">
+                          <X className="w-3.5 h-3.5" /> Incorrect
+                        </span>
+                      ) : (
+                        <span className="px-2.5 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-bold">
+                          Unanswered
+                        </span>
+                      )}
+                    </div>
                   </div>
 
-                  <h4 className="text-sm sm:text-base font-bold text-slate-900">
-                    {item.question.question}
-                  </h4>
+                  {/* Primary Table in Review */}
+                  {item.question.table && (
+                    <DbmsTableView table={item.question.table} />
+                  )}
 
-                  <div className="space-y-2">
-                    {item.question.options.map(opt => {
-                      const isUserChoice = userAnswerId === opt.id;
-                      const isCorrectChoice = opt.id === item.question.correctOptionId;
+                  {/* Additional Tables in Review */}
+                  {item.question.additionalTables && item.question.additionalTables.map((t, tIdx) => (
+                    <DbmsTableView key={tIdx} table={t} />
+                  ))}
+
+                  {/* Diagram in Review */}
+                  {item.question.diagram && (
+                    <DbmsDiagramRenderer 
+                      type={item.question.diagram.type} 
+                      caption={item.question.diagram.caption} 
+                    />
+                  )}
+
+                  {/* Options List in Review */}
+                  <div className="space-y-2 pt-2">
+                    {item.shuffledOptions.map((opt, optIndex) => {
+                      const letter = String.fromCharCode(65 + optIndex);
+                      const isOptionRight = (item.question.correctOptionIds || item.question.correctOptionId.split(',')).map(s => s.trim().toLowerCase()).includes(opt.originalId.toLowerCase());
+                      const isOptionChosen = isOptionSelected(item.question.id, opt.originalId, item.question.questionType);
 
                       return (
                         <div
-                          key={opt.id}
-                          className={`p-3 rounded-xl border text-xs sm:text-sm flex items-center justify-between gap-3 ${
-                            isCorrectChoice
-                              ? 'bg-emerald-50 border-emerald-300 text-emerald-900 font-medium'
-                              : isUserChoice
-                              ? 'bg-red-50 border-red-300 text-red-900'
-                              : 'bg-slate-50 border-slate-200 text-slate-700'
+                          key={opt.originalId}
+                          className={`p-3 rounded-xl border flex flex-col gap-1.5 text-xs sm:text-sm ${
+                            isOptionRight
+                              ? 'border-emerald-300 bg-emerald-50/70 text-emerald-900 font-semibold'
+                              : isOptionChosen
+                              ? 'border-rose-300 bg-rose-50/70 text-rose-900 line-through'
+                              : 'border-slate-200 bg-white text-slate-600'
                           }`}
                         >
-                          <div className="flex items-center gap-2.5">
-                            <span className="font-bold uppercase w-5">{opt.id})</span>
-                            <span>{opt.text}</span>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span className="w-5 h-5 rounded-md bg-slate-100 font-bold text-[11px] flex items-center justify-center shrink-0">
+                                {letter}
+                              </span>
+                              <span className="whitespace-pre-line">{opt.text}</span>
+                            </div>
+                            {isOptionRight && (
+                              <span className="text-[11px] font-bold text-emerald-700 shrink-0 flex items-center gap-0.5">
+                                <Check className="w-3.5 h-3.5" /> Correct Answer
+                              </span>
+                            )}
+                            {isOptionChosen && !isOptionRight && (
+                              <span className="text-[11px] font-bold text-rose-700 shrink-0 flex items-center gap-0.5">
+                                <X className="w-3.5 h-3.5" /> Your Answer
+                              </span>
+                            )}
                           </div>
-                          {isCorrectChoice && (
-                            <span className="text-xs font-bold text-emerald-700 flex items-center gap-1 shrink-0">
-                              <Check className="w-3.5 h-3.5" /> Correct Answer
-                            </span>
-                          )}
-                          {isUserChoice && !isCorrectChoice && (
-                            <span className="text-xs font-bold text-red-600 flex items-center gap-1 shrink-0">
-                              <X className="w-3.5 h-3.5" /> Your Answer
-                            </span>
+
+                          {opt.table && (
+                            <div className="pl-7">
+                              <DbmsTableView table={opt.table} />
+                            </div>
                           )}
                         </div>
                       );
@@ -569,7 +730,7 @@ export const DbmsMcqQuiz: React.FC = () => {
                     <div className="font-bold text-cyan-900 flex items-center gap-1.5">
                       <BookOpen className="w-3.5 h-3.5 text-cyan-700" /> Explanation:
                     </div>
-                    <p className="leading-relaxed text-slate-800">{item.question.explanation}</p>
+                    <p className="leading-relaxed text-slate-800 whitespace-pre-line">{item.question.explanation}</p>
                   </div>
                 </div>
               );
